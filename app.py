@@ -6,11 +6,10 @@ from dataclasses import dataclass
 
 import pandas as pd
 import streamlit as st
-import streamlit_shadcn_ui as ui
 from dotenv import load_dotenv
 
 from src.db import get_engine, introspect, render_schema, run_query
-from src.llm import LLMError, generate_sql, get_client
+from src.llm import LLMError, UnanswerableError, generate_sql, get_client
 from src.sql_validator import ValidationError, validate
 from src.ui import answer_block, card_close, card_open, hero, inject_theme, list_block
 from src.visualize import pick_chart
@@ -44,6 +43,7 @@ class QueryResult:
     error: str | None
     attempts: int
     raw_responses: list[str]
+    unanswerable_reason: str | None = None
 
 
 @st.cache_resource(show_spinner="Loading database…")
@@ -73,6 +73,13 @@ def answer(question: str, engine, schema, schema_text: str, client) -> QueryResu
             return QueryResult(
                 question=question, sql=validated.sql, df=df,
                 error=None, attempts=attempt, raw_responses=raw_responses,
+            )
+        except UnanswerableError as e:
+            # Model declined — do not retry; surface the reason to the user.
+            return QueryResult(
+                question=question, sql="", df=None, error=None,
+                attempts=attempt, raw_responses=raw_responses,
+                unanswerable_reason=e.reason,
             )
         except (ValidationError, LLMError) as e:
             prior_error = str(e)
@@ -136,7 +143,7 @@ def main() -> None:
             # — Time series with window functions —
             "Monthly revenue trend with year-over-year growth percentage",
             "Cumulative revenue over time",
-            "Quarter-over-quarter customer acquisition",
+            "New customers acquired per quarter (by first invoice date)",
             "Top-selling genre in each year",
             # — Comparative aggregates —
             "Customers whose total spend is above the average customer spend",
@@ -181,6 +188,17 @@ def _render_result(result: QueryResult) -> None:
         st.write(result.question)
 
     with st.chat_message("assistant", avatar="📊"):
+        if result.unanswerable_reason:
+            st.markdown(
+                f'<div class="card" style="border-color: rgba(245,158,11,0.35); '
+                f'background: rgba(245,158,11,0.06);">'
+                f'<div class="card-title" style="color:#FBBF24;">I can\'t answer that</div>'
+                f'<div style="font-size:15px; line-height:1.5;">{result.unanswerable_reason}</div>'
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+            return
+
         if result.error:
             st.error(
                 f"Couldn't answer after {result.attempts} attempt(s): {result.error}"
@@ -215,26 +233,16 @@ def _render_result(result: QueryResult) -> None:
                 st.code(result.sql, language="sql")
             return
 
-        # Full result — metric strip, chart (if any), then the data table
-        retry_note = f"after {result.attempts - 1} retry" if result.attempts > 1 else "first try"
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            ui.metric_card(title="Rows returned", content=f"{rows:,}",
-                           description="result size", key=f"m1_{id(result)}")
-        with m2:
-            ui.metric_card(title="Columns", content=str(cols),
-                           description="result shape", key=f"m2_{id(result)}")
-        with m3:
-            ui.metric_card(title="LLM attempts", content=str(result.attempts),
-                           description=retry_note, key=f"m3_{id(result)}")
-
+        # Full result — chart (if any), then the data table with stats in its header
         if chart.figure is not None:
             card_open("Visualization")
             st.plotly_chart(chart.figure, use_container_width=True, key=f"chart_{id(result)}")
             st.caption(chart.caption)
             card_close()
 
-        card_open(f"Data · {rows} rows")
+        retry_note = f"after {result.attempts - 1} retry" if result.attempts > 1 else "first try"
+        data_title = f"Data · {rows:,} rows × {cols} columns · {retry_note}"
+        card_open(data_title)
         st.dataframe(df, use_container_width=True, hide_index=True)
         card_close()
 

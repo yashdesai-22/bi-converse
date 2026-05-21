@@ -16,10 +16,18 @@ CSS = """
   --accent-2: #06B6D4;
 }
 
-/* hide Streamlit chrome */
-#MainMenu, footer, header [data-testid="stToolbar"],
+/* hide Streamlit chrome (but keep the sidebar collapse/expand control) */
+#MainMenu, footer,
 [data-testid="stDecoration"], [data-testid="stStatusWidget"] { display: none !important; }
 header { background: transparent !important; }
+
+/* keep the sidebar collapse/expand controls visible and clickable */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"] {
+  display: flex !important; visibility: visible !important; opacity: 1 !important;
+  z-index: 999 !important;
+}
 
 /* tighter container */
 .block-container { padding-top: 1.5rem !important; max-width: 1180px; }
