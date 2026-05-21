@@ -11,7 +11,7 @@ import plotly.graph_objects as go
 @dataclass
 class Chart:
     figure: go.Figure | None
-    kind: str  # "kpi" | "line" | "bar" | "scatter" | "table"
+    kind: str  # "answer" | "list" | "line" | "bar" | "scatter" | "table" | "empty"
     caption: str
 
 
@@ -29,18 +29,19 @@ def _is_temporal(s: pd.Series) -> bool:
 
 def pick_chart(df: pd.DataFrame) -> Chart:
     if df is None or df.empty:
-        return Chart(figure=None, kind="table", caption="No rows returned.")
+        return Chart(figure=None, kind="empty", caption="No rows returned.")
 
     rows, cols = df.shape
     numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     non_numeric = [c for c in df.columns if c not in numeric_cols]
 
-    # Single scalar -> KPI
-    if rows == 1 and cols == 1 and numeric_cols:
-        value = df.iloc[0, 0]
-        fig = go.Figure(go.Indicator(mode="number", value=float(value)))
-        fig.update_layout(height=240, margin=dict(l=20, r=20, t=20, b=20))
-        return Chart(figure=fig, kind="kpi", caption=df.columns[0])
+    # Single-value or single-row answers — no chart, render as text
+    if rows == 1:
+        return Chart(figure=None, kind="answer", caption="")
+
+    # Single-column result — list, not chart
+    if cols == 1:
+        return Chart(figure=None, kind="list", caption=df.columns[0])
 
     # Time series -> line
     temporal = [c for c in df.columns if _is_temporal(df[c])]

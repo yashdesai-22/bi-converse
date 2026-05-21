@@ -52,20 +52,45 @@ def validate(sql: str, schema: list[Table], engine: Engine | None = None) -> Val
 
     # Identifier whitelist
     schema_tables = {t.name.lower(): {c.name.lower() for c in t.columns} for t in schema}
+    cte_names = {
+        cte.alias_or_name.lower()
+        for cte in stmt.find_all(exp.CTE)
+        if cte.alias_or_name
+    }
     referenced: set[str] = set()
     for tbl in stmt.find_all(exp.Table):
         tname = tbl.name
-        if tname.lower() not in schema_tables:
+        lname = tname.lower()
+        if lname in cte_names:
+            continue
+        if lname not in schema_tables:
             raise ValidationError(f"Unknown table: {tname}")
         referenced.add(tname)
 
     all_known_cols = {c for cols in schema_tables.values() for c in cols}
+
+    # Aliases defined anywhere in the query are valid column references too
+    # (e.g. SELECT SUM(x) AS total ... ORDER BY total)
+    known_aliases = {
+        a.alias_or_name.lower()
+        for a in stmt.find_all(exp.Alias)
+        if a.alias_or_name
+    }
+    # CTE names act like tables when referenced
+    known_aliases |= {
+        cte.alias_or_name.lower()
+        for cte in stmt.find_all(exp.CTE)
+        if cte.alias_or_name
+    }
+
     for col in stmt.find_all(exp.Column):
         cname = col.name
         if not cname or cname == "*":
             continue
-        if cname.lower() not in all_known_cols:
-            raise ValidationError(f"Unknown column: {cname}")
+        lname = cname.lower()
+        if lname in all_known_cols or lname in known_aliases:
+            continue
+        raise ValidationError(f"Unknown column: {cname}")
 
     # Dry-run via EXPLAIN — catches anything the parser missed
     engine = engine or get_engine()

@@ -61,6 +61,29 @@ def test_unknown_column_rejected(schema_and_engine):
         validate('SELECT NotARealColumn FROM "Customer"', schema, engine)
 
 
+def test_aliased_column_in_order_by_passes(schema_and_engine):
+    schema, engine = schema_and_engine
+    sql = (
+        'SELECT c.CustomerId, c.FirstName, c.LastName, '
+        'SUM(i.Total) AS TotalSpend '
+        'FROM "Customer" c JOIN "Invoice" i ON c.CustomerId = i.CustomerId '
+        'GROUP BY c.CustomerId, c.FirstName, c.LastName '
+        'ORDER BY TotalSpend DESC LIMIT 10'
+    )
+    result = validate(sql, schema, engine)
+    assert {"Customer", "Invoice"}.issubset(set(result.referenced_tables))
+
+
+def test_cte_alias_allowed(schema_and_engine):
+    schema, engine = schema_and_engine
+    sql = (
+        'WITH customer_totals AS ('
+        '  SELECT CustomerId, SUM(Total) AS spend FROM "Invoice" GROUP BY CustomerId'
+        ') SELECT CustomerId, spend FROM customer_totals ORDER BY spend DESC LIMIT 5'
+    )
+    validate(sql, schema, engine)
+
+
 def test_garbage_rejected(schema_and_engine):
     schema, engine = schema_and_engine
     with pytest.raises(ValidationError):
