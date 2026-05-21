@@ -127,21 +127,22 @@ When extending the validator, add a regression test alongside.
 
 ## Deployment status
 
-- **GitHub:** pushed to https://github.com/yashdesai-22/bi-converse (public, `main`)
-- **Streamlit Community Cloud:** NOT YET DEPLOYED — pending the user clicking
-  through share.streamlit.io. When they share the URL, update the `Live demo:`
-  line at the top of README.md.
-- **Screenshot:** README has NO embed currently. The user opted to skip the GIF
-  recording. A static PNG screenshot is still pending — was offered at
-  `assets/screenshot.png` but not delivered.
+- **GitHub:** https://github.com/yashdesai-22/bi-converse (public, `main`)
+- **Live demo:** https://bi-converse.streamlit.app/ (Streamlit Community Cloud,
+  auto-redeploys on `git push origin main`)
+- **Screenshot:** README has NO embed. The user explicitly opted out of both
+  a GIF and a screenshot — do not re-pitch unless they ask.
 
 ## Pending user actions
 
-1. **Deploy on Streamlit Community Cloud** — needs their browser. Steps in README.
-2. **Take a screenshot of the app** — Win+Shift+S, save to `assets/screenshot.png`,
-   then I embed it in README.
-3. (Optional) **Add a few-shot examples block to `SYSTEM_PROMPT`** — would
-   measurably improve SQL quality on complex BI questions. ~30 min of work.
+1. (Optional) **Add a few-shot examples block to `SYSTEM_PROMPT`** — would
+   measurably improve SQL quality on complex BI questions. ~30 min.
+2. (Optional) **CSV/Parquet upload** — broadens the demo's pitch from "Chinook"
+   to "any dataset." ~1 hr.
+3. (Optional) **Stream the LLM response token-by-token** — visceral demo polish.
+   ~30 min.
+
+No blocking actions remaining. Project is shipped.
 
 ## Sample questions
 

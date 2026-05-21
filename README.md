@@ -1,6 +1,6 @@
 # Conversational BI Platform
 
-> **Live demo:** _[deploy this app and paste the URL here]_
+> **Live demo:** <https://bi-converse.streamlit.app/>
 
 Ask questions in plain English. A HuggingFace LLM writes SQL using **schema-aware
 prompting**, the query is **parsed, sandboxed, and dry-run** before it touches the
