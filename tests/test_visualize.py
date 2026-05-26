@@ -212,3 +212,45 @@ def test_hint_y_equal_to_x_is_ignored():
     chart = pick_chart(df, hint=ChartHint(y="Month"))
     assert chart.kind == "line"
     assert list(chart.figure.data[0].y) == [100, 150, 200]  # default kept
+
+
+# --- bucket labels (date_dim Quarter/Week strings) ----------------------------
+
+def test_quarter_label_renders_as_line_in_chronological_order():
+    df = pd.DataFrame({
+        "Quarter": ["2021-Q3", "2021-Q1", "2021-Q4", "2021-Q2"],
+        "NewCustomers": [10, 15, 8, 12],
+    })
+    chart = pick_chart(df)
+    assert chart.kind == "line"
+    assert list(chart.figure.data[0].x) == ["2021-Q1", "2021-Q2", "2021-Q3", "2021-Q4"]
+    assert list(chart.figure.data[0].y) == [15, 12, 10, 8]
+
+
+def test_week_label_renders_as_line_in_chronological_order():
+    df = pd.DataFrame({
+        "Week": ["2021-W22", "2021-W03", "2021-W15", "2021-W01"],
+        "Revenue": [8, 15, 10, 12],
+    })
+    chart = pick_chart(df)
+    assert chart.kind == "line"
+    assert list(chart.figure.data[0].x) == ["2021-W01", "2021-W03", "2021-W15", "2021-W22"]
+
+
+def test_bucket_label_with_color_series():
+    # Quarter on x, Genre as series color, Revenue as y.
+    df = pd.DataFrame({
+        "Quarter": ["2021-Q1", "2021-Q1", "2021-Q2", "2021-Q2"],
+        "Genre":   ["Rock",    "Jazz",    "Rock",    "Jazz"],
+        "Revenue": [100, 50, 120, 60],
+    })
+    chart = pick_chart(df)
+    assert chart.kind == "line"
+    assert len(chart.figure.data) == 2  # one trace per genre
+
+
+def test_non_bucket_string_still_falls_through_to_bar():
+    # Sanity: arbitrary categorical strings must NOT be misclassified as temporal.
+    df = pd.DataFrame({"Country": ["USA", "UK", "DE"], "Revenue": [100, 80, 60]})
+    chart = pick_chart(df)
+    assert chart.kind == "bar"

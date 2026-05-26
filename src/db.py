@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy import Engine, create_engine, inspect, text
 
+from .datedim import ensure_date_dim
 from .seed import DB_PATH, ensure_database
 
 
@@ -37,7 +38,9 @@ class Table:
 @lru_cache(maxsize=1)
 def get_engine(db_path: Path = DB_PATH) -> Engine:
     ensure_database(db_path)
-    return create_engine(f"sqlite:///{db_path}", future=True)
+    engine = create_engine(f"sqlite:///{db_path}", future=True)
+    ensure_date_dim(engine)
+    return engine
 
 
 def introspect(engine: Engine | None = None, sample_rows: int = 3) -> list[Table]:
@@ -75,6 +78,15 @@ def introspect(engine: Engine | None = None, sample_rows: int = 3) -> list[Table
     return tables
 
 
+_DATE_DIM_NOTE = (
+    "-- HELPER: date_dim is a calendar dimension covering the Invoice date range.\n"
+    "-- For ANY time-bucketing question (per quarter, per week, fiscal year, "
+    "YoY, QoQ, etc.), JOIN it on DATE(Invoice.InvoiceDate) = date_dim.Date\n"
+    "-- and pick the bucket column directly (Quarter, Month, Week, Year, "
+    "DayOfWeek, …) instead of computing it with strftime."
+)
+
+
 def render_schema(tables: list[Table]) -> str:
     """Compact schema description for prompting the LLM."""
     lines: list[str] = []
@@ -94,6 +106,8 @@ def render_schema(tables: list[Table]) -> str:
             preview = t.sample_rows[0]
             preview_str = ", ".join(f"{k}={_short(v)}" for k, v in preview.items())
             lines.append(f"-- sample: {preview_str}")
+        if t.name.lower() == "date_dim":
+            lines.append(_DATE_DIM_NOTE)
         lines.append("")
     return "\n".join(lines).strip()
 

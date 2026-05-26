@@ -172,6 +172,43 @@ PATTERNS: tuple[Pattern, ...] = (
         ),
     ),
     Pattern(
+        name="time-bucketing",
+        rationale=(
+            "Quarter/week/fiscal-period bucketing has no native SQLite token "
+            "(strftime gives year/month/day only). Use the date_dim table: "
+            "JOIN it on DATE(Invoice.InvoiceDate) = date_dim.Date and read the "
+            "Quarter/Week/Month/Year column directly. Never invent strftime "
+            "expressions for quarters."
+        ),
+        example_question="New customers acquired per quarter (by first invoice date).",
+        example_sql=(
+            "WITH firsts AS (\n"
+            "  SELECT CustomerId, MIN(DATE(InvoiceDate)) AS FirstInvoiceDate\n"
+            "  FROM Invoice\n"
+            "  GROUP BY CustomerId\n"
+            ")\n"
+            "SELECT d.Quarter AS Quarter,\n"
+            "       COUNT(*) AS NewCustomers\n"
+            "FROM firsts f\n"
+            "JOIN date_dim d ON d.Date = f.FirstInvoiceDate\n"
+            "GROUP BY d.Quarter\n"
+            "ORDER BY d.Quarter"
+        ),
+        # Triggers cover quarter/week/fiscal as bucket dimensions, plus the
+        # *-over-* abbreviations that imply chronological grouping. "by month"
+        # and "by year" are intentionally omitted — strftime('%Y-%m', ...) and
+        # strftime('%Y', ...) already give the model the right answer there,
+        # so injecting a worked example would be pure token waste.
+        triggers=_re(
+            r"\b(per|each|by)\s+(quarter|week|fiscal\s+year|iso\s+week|day\s+of\s+week|weekday)\b",
+            r"\bquarter(ly|s)?\b",
+            r"\bweek(ly|s)?\b",
+            r"\bfiscal\s+(year|quarter|period)\b",
+            r"\b(qoq|wow)\b",
+            r"\btrailing\s+\d+\s+(quarter|week|month|year)s?\b",
+        ),
+    ),
+    Pattern(
         name="pivot-conditional-aggregation",
         rationale=(
             "SQLite has no native PIVOT. To turn a category into columns, "

@@ -13,9 +13,23 @@ import plotly.graph_objects as go
 # `ID` covers ALL_CAPS. "valid" / "paid" don't match (no capital I, no underscore).
 _ID_SUFFIX = re.compile(r"(?:[a-z]Id|_[iI]d|ID)$")
 
+# Time-bucket labels produced by date_dim: 'YYYY-Qn' (quarter), 'YYYY-Wnn' (week).
+# pd.to_datetime can't parse these but they sort lexicographically in chronological
+# order, so we treat them as temporal for the line-chart branch.
+_BUCKET_LABEL = re.compile(r"^\d{4}-(Q[1-4]|W\d{1,2})$")
+
 
 def _looks_like_identifier(name: str) -> bool:
     return bool(_ID_SUFFIX.search(name))
+
+
+def _looks_like_bucket_label(s: pd.Series) -> bool:
+    if s.dtype != object:
+        return False
+    sample = s.dropna().astype(str).head(50)
+    if sample.empty:
+        return False
+    return sample.map(lambda v: bool(_BUCKET_LABEL.match(v))).mean() > 0.8
 
 
 @dataclass
@@ -42,13 +56,15 @@ class ChartHint:
 def _is_temporal(s: pd.Series) -> bool:
     if pd.api.types.is_datetime64_any_dtype(s):
         return True
-    if s.dtype == object:
-        try:
-            parsed = pd.to_datetime(s, errors="coerce")
-            return parsed.notna().mean() > 0.8
-        except (ValueError, TypeError):
-            return False
-    return False
+    if s.dtype != object:
+        return False
+    if _looks_like_bucket_label(s):
+        return True
+    try:
+        parsed = pd.to_datetime(s, errors="coerce")
+        return parsed.notna().mean() > 0.8
+    except (ValueError, TypeError):
+        return False
 
 
 def pick_chart(
@@ -91,7 +107,11 @@ def pick_chart(
         x = temporal[0]
         y = _hint_y_or_default(hint, numeric_cols)
         plot_df = plot_base.copy()
-        plot_df[x] = pd.to_datetime(plot_df[x], errors="coerce")
+        # Bucket labels like '2021-Q1' / '2021-W17' don't parse as dates, but
+        # they're chronological under lexicographic sort — leave them as strings
+        # so Plotly draws them as ordered categorical ticks.
+        if not _looks_like_bucket_label(plot_df[x]):
+            plot_df[x] = pd.to_datetime(plot_df[x], errors="coerce")
 
         series_candidates = [c for c in non_numeric if c not in temporal]
         cand = _resolve_color(hint, plot_df.columns, series_candidates, exclude={x, y})

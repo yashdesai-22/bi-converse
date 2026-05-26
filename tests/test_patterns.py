@@ -40,6 +40,16 @@ from src.patterns import PATTERNS, select_pattern
     ("Revenue by country with one column per year", "pivot-conditional-aggregation"),
     ("Pivot revenue by genre across years", "pivot-conditional-aggregation"),
     ("Cross-tab of country vs year", "pivot-conditional-aggregation"),
+
+    # time-bucketing — quarter / week / fiscal / day-of-week
+    ("New customers acquired per quarter (by first invoice date)", "time-bucketing"),
+    ("Revenue by quarter", "time-bucketing"),
+    ("Quarterly revenue trend", "time-bucketing"),
+    ("Weekly active customers", "time-bucketing"),
+    ("Sales by week", "time-bucketing"),
+    ("Sales by day of week", "time-bucketing"),
+    ("Fiscal year revenue", "time-bucketing"),
+    ("Trailing 4 quarters revenue", "time-bucketing"),
 ])
 def test_router_matches(question, expected):
     pat = select_pattern(question)
@@ -58,6 +68,10 @@ def test_router_matches(question, expected):
     "Average track length",
     "List all genres",
     "Count of invoices in 2010",
+    # Month/year bucketing is fine via plain strftime — must NOT route to time-bucketing.
+    "Revenue by month",
+    "Revenue by year",
+    "Monthly revenue trend",
 ])
 def test_router_returns_none_for_non_pattern_questions(question):
     pat = select_pattern(question)

@@ -28,6 +28,7 @@ makes the demo more convincing to a recruiter, **not** production hardening.
 
 ```
 question → (pattern router: match → inject 1 worked example) → schema-aware prompt
+                                                       (schema bundles date_dim helper)
                                                                        ↓
                                                        HF Inference (Qwen2.5-Coder)
                                                                        ↓
@@ -66,6 +67,7 @@ bi-converse/
 ├── src/
 │   ├── __init__.py
 │   ├── seed.py               Downloads Chinook_Sqlite.sqlite into data/ on first run
+│   ├── datedim.py            Kimball date dimension; built into the SQLite DB at startup
 │   ├── db.py                 SQLAlchemy engine, schema introspection, query exec
 │   ├── llm.py                InferenceClient + SYSTEM_PROMPT (with CoT PLAN) + extract_sql + refusal
 │   ├── patterns.py           Pattern registry + regex router; injects one worked example per question
@@ -78,7 +80,8 @@ bi-converse/
 │   ├── test_patterns.py         Pattern router: positive routes, no-route cases, "by revenue" trap
 │   ├── test_schema_inspect.py   PK/FK collection, alias resolution, aggregate-skip
 │   ├── test_chart_hint.py       ```chart``` block parsing + fence regex hardening
-│   └── test_visualize.py        Chart picker: single/multi-series line, series cap, ID handling, hint overrides
+│   ├── test_datedim.py          date_dim build, idempotency, bucket labels, JOIN against Invoice
+│   └── test_visualize.py        Chart picker: single/multi-series line, series cap, ID handling, hint overrides, bucket labels
 └── data/                     Created at runtime; chinook.sqlite cached here (gitignored)
 ```
 
@@ -111,6 +114,25 @@ bi-converse/
   x-axis, etc.) and **silently falls back to its heuristics on any mismatch** — the LLM
   proposes, the heuristic disposes. The `_FENCE` regex was hardened to exclude ```chart```
   blocks so they can't be mis-extracted as SQL.
+- **Time-bucketing routes through `date_dim`, not `strftime`.** SQLite has no
+  quarter/fiscal/ISO-week token, so `src/datedim.py` builds a Kimball-style
+  calendar dimension table (`Date PK`, `Year`, `Quarter` ('YYYY-Qn'), `Month`,
+  `Week`, `MonthName`, `DayOfWeek`, `MonthStart`, `QuarterStart`, `YearStart`)
+  on the first call to `get_engine()`. The table spans
+  `(min(InvoiceDate).year - 1)` through `(max(InvoiceDate).year + 1)` and is
+  idempotent — re-running the build is a no-op once rows exist. `render_schema`
+  appends a HELPER comment under the table's DDL telling the LLM to
+  `JOIN date_dim ON DATE(Invoice.InvoiceDate) = date_dim.Date`. The
+  `time-bucketing` pattern in `patterns.py` triggers on quarter/week/fiscal/qoq
+  and injects a worked example using this JOIN shape. Month/year bucketing is
+  intentionally NOT in the trigger set — plain `strftime('%Y-%m', ...)` and
+  `strftime('%Y', ...)` already work, no need to burn pattern-injection tokens.
+- **The chart picker recognizes `'YYYY-Qn'` / `'YYYY-Wnn'` bucket strings as temporal**
+  via `_looks_like_bucket_label` in `visualize.py`, so quarter/week-bucketed
+  results render as line charts in lex (= chronological) order rather than
+  total-descending bars. The string is kept as-is for x-axis ticks; the
+  datetime conversion in the line branch is skipped when the column is a
+  bucket label (because `pd.to_datetime('2021-Q2')` returns NaT).
 - **ID-like columns (`CustomerId`, `employee_id`, `USER_ID`) are treated as categorical**
   even when their dtype is integer, and are cast to string before plotting so Plotly
   draws discrete category ticks instead of a continuous numeric axis. Detection has two layers:
@@ -147,13 +169,15 @@ installs go to system Python.
 python -m pytest tests/ -q
 ```
 
-Currently 81 tests, all passing. Validator covers SELECT happy path, JOIN+aggregate,
+Currently 102 tests, all passing. Validator covers SELECT happy path, JOIN+aggregate,
 ORDER BY alias, CTE alias, write-statement rejection (DROP/DELETE/UPDATE/INSERT),
 multi-statement rejection, unknown-table, unknown-column, parse-error. Pattern
 router covers positive routes for each registered pattern, no-route cases for
-plain ranking ("top 10 by revenue"), and aggregate uniqueness. Visualize covers
-single- and multi-series line, the 12-series cap, and the answer/list/empty
-short-circuits.
+plain ranking ("top 10 by revenue") and month/year bucketing, and aggregate
+uniqueness. date_dim covers idempotent build, ±1-year padding, bucket-label
+correctness, and the JOIN-on-Invoice shape. Visualize covers single- and
+multi-series line, the 12-series cap, quarter/week bucket-label rendering, and
+the answer/list/empty short-circuits.
 
 When extending the validator, add a regression test alongside. When adding a
 new pattern, add a positive route test AND a no-route test for the most likely
@@ -183,6 +207,9 @@ Items already shipped (don't re-pitch):
 - Schema-aware ID detection — `schema_inspect.identifier_result_columns`
   catches aliased PK/FK columns so Plotly treats them as categorical, not
   numeric (no more CustomerId on a continuous axis).
+- date_dim time-bucketing — `src/datedim.py` builds a calendar dimension at
+  startup; the LLM joins against it instead of fighting SQLite's missing
+  quarter / fiscal / ISO-week tokens.
 
 No blocking actions remaining. Project is shipped.
 
@@ -206,7 +233,9 @@ data).
   `HF_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct`.
 - **The Chinook schema has no creation/timestamp columns on entities.** Only
   `Invoice.InvoiceDate` exists. Questions about "growth," "acquisition," or
-  "trend" should be phrased relative to `InvoiceDate`.
+  "trend" should be phrased relative to `InvoiceDate`. The auto-built `date_dim`
+  is the canonical place to bucket those dates (quarter / week / fiscal /
+  day-of-week); plain `strftime` is still fine for year and month.
 - **Streamlit Cloud uses `st.secrets`, not env vars.** `app.py` bridges
   `st.secrets["HF_TOKEN"]` into `os.environ` before calling `get_client()`.
 - **Windows line endings.** Git warns about CRLF on every commit — this is
