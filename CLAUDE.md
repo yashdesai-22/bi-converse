@@ -27,18 +27,23 @@ makes the demo more convincing to a recruiter, **not** production hardening.
 ## Pipeline
 
 ```
-question → schema-aware prompt → HF Inference (Qwen2.5-Coder)
-                                       ↓
-                                generated SQL
-                                       ↓
-   sqlglot parse + SELECT-only + identifier whitelist + EXPLAIN dry-run
-                                       ↓
+question → (pattern router: match → inject 1 worked example) → schema-aware prompt
+                                                                       ↓
+                                                       HF Inference (Qwen2.5-Coder)
+                                                                       ↓
+                                       PLAN + ```sql```block + ```chart``` block
+                                                                       ↓
+        sqlglot parse + SELECT-only + identifier whitelist + EXPLAIN dry-run
+                                                                       ↓
               ┌────── validation error ──┴── ok ──────┐
               ↓                                        ↓
    feed error to LLM (≤2 retries)             execute on SQLite
                                                        ↓
-                                  shape-aware render: answer / list /
-                                  line / bar / scatter / table / empty
+                            schema_inspect: PK/FK column aliases from the SQL
+                                                       ↓
+                       pick_chart(df, schema_id_cols, hint=chart_hint)
+                                                       ↓
+                         answer / list / line / bar / scatter / table / empty
 ```
 
 Plus a **refusal path**: the LLM can emit `CANNOT_ANSWER: <reason>` instead of
@@ -62,12 +67,18 @@ bi-converse/
 │   ├── __init__.py
 │   ├── seed.py               Downloads Chinook_Sqlite.sqlite into data/ on first run
 │   ├── db.py                 SQLAlchemy engine, schema introspection, query exec
-│   ├── llm.py                InferenceClient + SYSTEM_PROMPT + extract_sql + refusal
+│   ├── llm.py                InferenceClient + SYSTEM_PROMPT (with CoT PLAN) + extract_sql + refusal
+│   ├── patterns.py           Pattern registry + regex router; injects one worked example per question
+│   ├── schema_inspect.py     Parses validated SQL → set of result columns that alias a PK/FK
 │   ├── sql_validator.py      sqlglot safety + identifier whitelist + EXPLAIN
 │   ├── visualize.py          pick_chart(): result-shape → Chart (kind, figure, caption)
 │   └── ui.py                 Theme CSS injection, hero(), card helpers, answer/list blocks
 ├── tests/
-│   └── test_validator.py     Happy paths + rejects DROP/UPDATE/multi-stmt/unknown ids
+│   ├── test_validator.py        Happy paths + rejects DROP/UPDATE/multi-stmt/unknown ids
+│   ├── test_patterns.py         Pattern router: positive routes, no-route cases, "by revenue" trap
+│   ├── test_schema_inspect.py   PK/FK collection, alias resolution, aggregate-skip
+│   ├── test_chart_hint.py       ```chart``` block parsing + fence regex hardening
+│   └── test_visualize.py        Chart picker: single/multi-series line, series cap, ID handling, hint overrides
 └── data/                     Created at runtime; chinook.sqlite cached here (gitignored)
 ```
 
@@ -88,10 +99,27 @@ bi-converse/
   - 1 row → `kind="answer"` (rendered as labeled key/value card; no chart)
   - 1 column, N rows → `kind="list"` (numbered list; no chart)
   - empty → `kind="empty"` (info banner)
-  - temporal + numeric → line
+  - temporal + numeric → line (multi-series when an extra categorical column exists; capped at 12 series, top-by-total)
   - categorical + numeric → bar
   - 2 numerics → scatter
   - otherwise → table
+- **The LLM emits a structured chart hint alongside SQL.** After the ```sql``` block,
+  the model writes a ```chart``` block with `y:`, `color:`, `title:`, `kind:` keys (only
+  `y` is meaningful most of the time). `parse_chart_hint` in `llm.py` returns a `ChartHint`,
+  which flows through `QueryResult.chart_hint` into `pick_chart(... hint=...)`. The picker
+  honors the hint when it validates against the actual DataFrame (column exists, isn't the
+  x-axis, etc.) and **silently falls back to its heuristics on any mismatch** — the LLM
+  proposes, the heuristic disposes. The `_FENCE` regex was hardened to exclude ```chart```
+  blocks so they can't be mis-extracted as SQL.
+- **ID-like columns (`CustomerId`, `employee_id`, `USER_ID`) are treated as categorical**
+  even when their dtype is integer, and are cast to string before plotting so Plotly
+  draws discrete category ticks instead of a continuous numeric axis. Detection has two layers:
+  (1) name-based (`_looks_like_identifier` in `visualize.py`) for the unaliased common case;
+  (2) **schema-aware** (`schema_inspect.identifier_result_columns`) which parses the validated
+  SQL, walks the outermost SELECT's projection list, and flags any alias whose source is a PK
+  or FK column. The app passes the resulting set into `pick_chart(df, schema_id_cols=...)`,
+  catching `SELECT c.CustomerId AS Customer` patterns the name regex misses. Cardinality was
+  rejected as too false-positive-prone on legitimately-unique measures.
 - **The sidebar is always open by default** (`initial_sidebar_state="expanded"`)
   but users CAN collapse it via the chevron. Don't hide the collapse button.
 - **Two scrollable sidebar blocks** ("Database Tables" + "Sample questions"),
@@ -119,11 +147,17 @@ installs go to system Python.
 python -m pytest tests/ -q
 ```
 
-Currently 12 tests, all passing. Covers SELECT happy path, JOIN+aggregate,
+Currently 81 tests, all passing. Validator covers SELECT happy path, JOIN+aggregate,
 ORDER BY alias, CTE alias, write-statement rejection (DROP/DELETE/UPDATE/INSERT),
-multi-statement rejection, unknown-table, unknown-column, parse-error.
+multi-statement rejection, unknown-table, unknown-column, parse-error. Pattern
+router covers positive routes for each registered pattern, no-route cases for
+plain ranking ("top 10 by revenue"), and aggregate uniqueness. Visualize covers
+single- and multi-series line, the 12-series cap, and the answer/list/empty
+short-circuits.
 
-When extending the validator, add a regression test alongside.
+When extending the validator, add a regression test alongside. When adding a
+new pattern, add a positive route test AND a no-route test for the most likely
+phrase that should NOT trigger it.
 
 ## Deployment status
 
@@ -135,12 +169,20 @@ When extending the validator, add a regression test alongside.
 
 ## Pending user actions
 
-1. (Optional) **Add a few-shot examples block to `SYSTEM_PROMPT`** — would
-   measurably improve SQL quality on complex BI questions. ~30 min.
-2. (Optional) **CSV/Parquet upload** — broadens the demo's pitch from "Chinook"
+1. (Optional) **CSV/Parquet upload** — broadens the demo's pitch from "Chinook"
    to "any dataset." ~1 hr.
-3. (Optional) **Stream the LLM response token-by-token** — visceral demo polish.
+2. (Optional) **Stream the LLM response token-by-token** — visceral demo polish.
    ~30 min.
+
+Items already shipped (don't re-pitch):
+- Few-shot examples — `SYSTEM_PROMPT` now has 3 worked examples; the pattern
+  library (`src/patterns.py`) injects an additional per-question example when
+  the question matches a known shape.
+- Structured LLM output — model emits both ```sql``` and ```chart``` blocks;
+  the chart hint flows into `pick_chart` to fix headline-metric selection.
+- Schema-aware ID detection — `schema_inspect.identifier_result_columns`
+  catches aliased PK/FK columns so Plotly treats them as categorical, not
+  numeric (no more CustomerId on a continuous axis).
 
 No blocking actions remaining. Project is shipped.
 
@@ -156,9 +198,12 @@ data).
 
 ## Known constraints / quirks
 
-- **HF Inference free credits are limited.** Each question = 1 LLM call (~600
-  input + ~100 output tokens). Tens to low-hundreds of queries per month should
-  stay free. If a 402 hits, swap to `HF_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct`.
+- **HF Inference free credits are limited.** Each question = 1 LLM call. Token
+  budget is roughly: ~1,200 input (schema ~600 + system prompt ~600 + optional
+  pattern injection ~400 when matched) + up to 768 output (`max_tokens` cap;
+  actual ~250–500 with PLAN + SQL + chart block). Tens to low-hundreds of
+  queries per month should stay free. If a 402 hits, swap to
+  `HF_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct`.
 - **The Chinook schema has no creation/timestamp columns on entities.** Only
   `Invoice.InvoiceDate` exists. Questions about "growth," "acquisition," or
   "trend" should be phrased relative to `InvoiceDate`.
@@ -175,5 +220,11 @@ data).
 Before adding anything, ask: *does this strengthen the resume story?* Good adds:
 better example questions, clearer error states, polished screenshots, an
 "Explain SQL" feature (we built and then removed this — could come back),
-streaming LLM output, few-shot prompt examples, CSV upload (BYO data).
+streaming LLM output, CSV upload (BYO data).
 Bad adds: auth, multi-tenancy, cost dashboards, RBAC, a full React rewrite.
+
+**Architectural pattern to keep:** the project converged on "LLM proposes,
+heuristic disposes" — the model emits chart hints, pattern picks, etc., and
+a deterministic layer validates them and falls back silently on any mismatch.
+This is the right shape for new improvements too: ask the LLM, validate the
+answer, never trust blindly, always have a non-LLM fallback path.

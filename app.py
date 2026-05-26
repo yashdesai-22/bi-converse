@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import pandas as pd
 import streamlit as st
@@ -10,9 +10,10 @@ from dotenv import load_dotenv
 
 from src.db import get_engine, introspect, render_schema, run_query
 from src.llm import LLMError, UnanswerableError, generate_sql, get_client
+from src.schema_inspect import identifier_result_columns
 from src.sql_validator import ValidationError, validate
 from src.ui import answer_block, card_close, card_open, hero, inject_theme, list_block
-from src.visualize import pick_chart
+from src.visualize import ChartHint, pick_chart
 
 load_dotenv()
 
@@ -44,6 +45,8 @@ class QueryResult:
     attempts: int
     raw_responses: list[str]
     unanswerable_reason: str | None = None
+    id_columns: set[str] = field(default_factory=set)
+    chart_hint: ChartHint | None = None
 
 
 @st.cache_resource(show_spinner="Loading database…")
@@ -73,6 +76,8 @@ def answer(question: str, engine, schema, schema_text: str, client) -> QueryResu
             return QueryResult(
                 question=question, sql=validated.sql, df=df,
                 error=None, attempts=attempt, raw_responses=raw_responses,
+                id_columns=identifier_result_columns(validated.sql, schema),
+                chart_hint=resp.hint,
             )
         except UnanswerableError as e:
             # Model declined — do not retry; surface the reason to the user.
@@ -210,7 +215,7 @@ def _render_result(result: QueryResult) -> None:
 
         df = result.df
         rows, cols = (df.shape if df is not None else (0, 0))
-        chart = pick_chart(df)
+        chart = pick_chart(df, schema_id_cols=result.id_columns, hint=result.chart_hint)
 
         # Empty result — say so, no table or chart
         if chart.kind == "empty":

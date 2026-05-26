@@ -7,6 +7,9 @@ from dataclasses import dataclass
 
 from huggingface_hub import InferenceClient
 
+from src.patterns import format_pattern_block, select_pattern
+from src.visualize import ChartHint
+
 DEFAULT_MODEL = "Qwen/Qwen2.5-Coder-32B-Instruct"
 DEFAULT_PROVIDER = "auto"
 
@@ -29,6 +32,19 @@ PLAN:
 - Ordering & limit: ORDER BY columns and LIMIT.
 
 Then output the SQL in a ```sql ... ``` fenced block. The block must contain ONLY executable SQL — no comments, no prose.
+
+After the SQL block, output a second fenced block tagged `chart` that tells the visualization layer which result column is the headline metric:
+
+```chart
+y: <exact name of the result column to use on the y-axis — the metric the question is really asking about>
+color: <optional — column to split series by, e.g. a categorical for multi-line>
+title: <optional — short chart title, 5–8 words>
+```
+
+Chart block rules:
+- Use the EXACT column name or alias as it appears in the SELECT (post-alias).
+- `y` is REQUIRED whenever the SELECT projects more than one numeric column — otherwise the picker can't tell which one is the headline. Example: a query that returns `MonthlyRevenue` and `CumulativeRevenue` for a "cumulative revenue" question must specify `y: CumulativeRevenue`.
+- Skip the entire `chart` block on a refusal.
 
 # Critical SQL patterns
 
@@ -103,6 +119,10 @@ SELECT COUNT(*) AS invoice_count
 FROM Invoice
 WHERE InvoiceDate >= '2013-01-01' AND InvoiceDate < '2014-01-01';
 ```
+```chart
+y: invoice_count
+title: Invoices issued in 2013
+```
 
 ## Example 2 — top-per-group (the classic pitfall)
 Question: "What is the best-selling track in each genre?"
@@ -130,6 +150,11 @@ WHERE rn = 1
 ORDER BY genre
 LIMIT 1000;
 ```
+```chart
+y: units_sold
+color: genre
+title: Best-selling track per genre
+```
 
 ## Example 3 — refusal
 Question: "Which customers are most loyal?"
@@ -142,6 +167,7 @@ CANNOT_ANSWER: "Loyal" is undefined — please specify a metric such as number o
 class LLMResponse:
     sql: str
     raw: str
+    hint: ChartHint | None = None
 
 
 class LLMError(RuntimeError):
@@ -163,8 +189,11 @@ def build_user_prompt(schema: str, question: str, prior_error: str | None = None
         schema,
         "```",
         "",
-        f"Question: {question}",
     ]
+    pattern = select_pattern(question)
+    if pattern is not None:
+        parts += [format_pattern_block(pattern), ""]
+    parts += [f"Question: {question}"]
     if prior_error:
         parts += [
             "",
@@ -204,28 +233,74 @@ def generate_sql(
         temperature=0.1,
     )
     raw = completion.choices[0].message.content or ""
-    return LLMResponse(sql=extract_sql(raw), raw=raw)
+    return LLMResponse(sql=extract_sql(raw), raw=raw, hint=parse_chart_hint(raw))
 
 
-_FENCE = re.compile(r"```(?:sql|sqlite)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+# `sql` / `sqlite` tag preferred. Generic-tag fallback explicitly excludes the
+# `chart` block (added in the structured-output contract) so it can't be
+# accidentally extracted as SQL.
+_FENCE_SQL = re.compile(r"```(?:sql|sqlite)\s+(.*?)```", re.IGNORECASE | re.DOTALL)
+_FENCE_GENERIC = re.compile(r"```(?!chart\b)(?:[a-z]+)?\s*(.*?)```", re.IGNORECASE | re.DOTALL)
+_CHART_FENCE = re.compile(r"```chart\s*(.*?)```", re.IGNORECASE | re.DOTALL)
 _REFUSAL = re.compile(r"CANNOT_ANSWER\s*:\s*(.+?)(?:\n|$)", re.IGNORECASE)
 
 
 def extract_sql(raw: str) -> str:
     """Pull SQL out of a fenced block; raise UnanswerableError on a refusal marker."""
-    fence = _FENCE.search(raw)
-    if fence:
-        sql = fence.group(1).strip().rstrip(";").strip()
-        if sql:
-            return sql
+    for pattern in (_FENCE_SQL, _FENCE_GENERIC):
+        m = pattern.search(raw)
+        if m:
+            sql = m.group(1).strip().rstrip(";").strip()
+            if sql:
+                return sql
 
     # No fenced SQL — check for a refusal marker
     refusal = _REFUSAL.search(raw)
     if refusal:
         raise UnanswerableError(refusal.group(1).strip())
 
-    # Fall back to stripped text (legacy behavior)
+    # If the response contained any fenced block (e.g. just a `chart` block)
+    # but none held SQL, treat it as malformed — do not fall through to the
+    # stripped-text path, which would happily return the chart body as "SQL".
+    if "```" in raw:
+        raise LLMError("Model emitted fenced blocks but none contained SQL.")
+
+    # Last resort: no fences at all — treat the whole response as SQL.
     sql = raw.strip().rstrip(";").strip()
     if not sql:
         raise LLMError("Model returned no SQL.")
     return sql
+
+
+# Recognised chart-hint keys; anything else is silently dropped so a model
+# typo or future field doesn't propagate as junk into pick_chart.
+_CHART_KEYS = {"y", "color", "title", "kind"}
+_HINT_NULL_VALUES = {"", "none", "null", "n/a", "-", "auto"}
+
+
+def parse_chart_hint(raw: str) -> ChartHint | None:
+    """Parse the model's ```chart``` block into a ChartHint, or None if absent/empty."""
+    m = _CHART_FENCE.search(raw)
+    if not m:
+        return None
+    fields: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        line = line.strip()
+        if not line or ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        key = key.strip().lower()
+        if key not in _CHART_KEYS:
+            continue
+        val = val.strip().strip('"').strip("'")
+        if val.lower() in _HINT_NULL_VALUES:
+            continue
+        fields[key] = val
+    if not fields:
+        return None
+    return ChartHint(
+        y=fields.get("y"),
+        color=fields.get("color"),
+        title=fields.get("title"),
+        kind=fields.get("kind"),
+    )
